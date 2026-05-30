@@ -54,8 +54,11 @@ export const signupSchema = z.object({
 export const loginSchema = z.object({
     body: z.object({
         email: z.string().email("Invalid email address").toLowerCase().trim(),
-
         password: z.string().min(1, "Password is required"),
+        // Optional — if user belongs to multiple tenants, they select which one
+        // If not provided and user has only one tenant, that tenant is auto-selected
+        // If not provided and user has multiple tenants, return list for selection
+        tenantId: z.string().uuid("Invalid tenant ID").optional(),
     }),
 });
 
