@@ -113,7 +113,9 @@ const parseMetaError = (error: AxiosError): MetaApiError => {
         code: metaError.code,
         message: metaError.message,
         type: META_ERROR_CODES[metaError.code] ?? "UNKNOWN_META_ERROR",
-        fbTraceId: metaError.fbtrace_id,
+        ...(metaError.fbtrace_id !== undefined && {
+            fbTraceId: metaError.fbtrace_id,
+        }),
     };
 };
 

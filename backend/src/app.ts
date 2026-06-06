@@ -1,5 +1,5 @@
-// app.ts
 import "dotenv/config";
+import "express-async-errors";
 import express, {
     Request,
     Response,
@@ -12,7 +12,7 @@ import hpp from "hpp";
 import { Redis } from "@upstash/redis";
 import { logger } from "./utils/logger.js";
 import { isHealthy, waitForDatabase } from "./db/index.js";
-import { validateEnv } from "./config/index.js";
+import { config, validateEnv } from "./config/index.js";
 import { AppError } from "./utils/errors.js";
 import { getErrorMessage } from "./utils/helpers.js";
 import {
@@ -25,13 +25,13 @@ import { requestId } from "./middlewares/requestId.middleware.js";
 // ─── Validate env on startup ───────────────────────────────────────────────────
 validateEnv();
 
-// ─── Redis client — one instance, reused everywhere ───────────────────────────
+// ─── Redis client ──────────────────────────────────────────────────────────────
 const redis = new Redis({
-    url: process.env.UPSTASH_REDIS_REST_URL,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    url: config.upstash.redisUrl,
+    token: config.upstash.redisToken,
 });
 
-// ─── Service health checker — used by /health and startup log ─────────────────
+// ─── Service health checker ────────────────────────────────────────────────────
 const checkServices = async (): Promise<{ db: boolean; redis: boolean }> => {
     const db = await isHealthy();
     let redisOk = false;
@@ -47,9 +47,6 @@ const checkServices = async (): Promise<{ db: boolean; redis: boolean }> => {
 // ─── Express app ───────────────────────────────────────────────────────────────
 const app = express();
 
-// Trust Render's proxy — required for correct req.ip and rate limiting
-// Without this, all requests appear to come from the same proxy IP
-// '1' means trust the first proxy in the chain (Render's load balancer)
 app.set("trust proxy", 1);
 
 // ─── Security middleware ───────────────────────────────────────────────────────
@@ -67,19 +64,15 @@ app.use(
     }),
 );
 
-// CORS — supports multiple origins via comma-separated FRONTEND_URL
-// Allows both Vercel preview URLs and custom domain simultaneously
-// Example: FRONTEND_URL=https://chatrix.vercel.app,https://app.chatrix.io
+// ─── CORS ──────────────────────────────────────────────────────────────────────
 const getAllowedOrigins = (): string[] => {
-    const raw = process.env.FRONTEND_URL ?? "http://localhost:3001";
-    return raw.split(",").map((origin) => origin.trim());
+    return config.frontendUrl.split(",").map((origin) => origin.trim());
 };
 
 app.use(
     cors({
         origin: (origin, callback) => {
             const allowed = getAllowedOrigins();
-            // Allow requests with no origin — mobile apps, Postman, server-to-server
             if (!origin || allowed.includes(origin)) {
                 callback(null, true);
             } else {
@@ -92,7 +85,13 @@ app.use(
     }),
 );
 
+// ─── Body parsers ──────────────────────────────────────────────────────────────
 app.use(hpp());
+
+// Raw body for webhook — must be before express.json()
+// Signature verification needs raw bytes — parsed JSON loses them
+app.use("/webhook", express.raw({ type: "application/json" }));
+
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 
@@ -120,7 +119,7 @@ app.get("/health", async (_req: Request, res: Response): Promise<void> => {
     });
 });
 
-// ─── Routes — uncommented as each session completes ───────────────────────────
+// ─── Routes ────────────────────────────────────────────────────────────────────
 // Session 2:  import webhookRouter from './routes/webhook.route.js';
 //             app.use('/webhook', webhookRouter);
 // Session 6:  import authRouter from './routes/auth.route.js';
@@ -148,7 +147,7 @@ const errorHandler: ErrorRequestHandler = (
     const statusCode = err instanceof AppError ? err.statusCode : 500;
     const message = isOperational
         ? err.message
-        : process.env.NODE_ENV === "production"
+        : config.isProd
           ? "Internal server error"
           : err.message;
 
@@ -156,7 +155,7 @@ const errorHandler: ErrorRequestHandler = (
         requestId: req.id,
         error: err.message,
         statusCode,
-        stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
+        stack: config.isDev ? err.stack : undefined,
     });
 
     res.status(statusCode).json({ error: message });
@@ -165,10 +164,8 @@ const errorHandler: ErrorRequestHandler = (
 app.use(errorHandler);
 
 // ─── Start server ──────────────────────────────────────────────────────────────
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = config.port;
 
-// Wait for database before starting server
-// Prevents accepting requests when DB is not ready
 try {
     await waitForDatabase();
 } catch (error) {
@@ -193,7 +190,7 @@ const server = app.listen(PORT, async () => {
         console.log(
             `  🔴 Redis       →  ${redisOk ? "✅ Connected" : "❌ Disconnected"}`,
         );
-        console.log(`  🌍 Environment →  ${process.env.NODE_ENV}`);
+        console.log(`  🌍 Environment →  ${config.nodeEnv}`);
         console.log("");
     } catch (error) {
         logger.error("Startup health check failed", {

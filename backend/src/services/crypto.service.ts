@@ -1,8 +1,3 @@
-// Encrypts and decrypts sensitive data using AES-256-GCM
-// Used for: WhatsApp access tokens stored in database
-//
-// Storage format: iv:authTag:encryptedData (colon separated, hex encoded)
-
 import {
     createCipheriv,
     createDecipheriv,
@@ -11,42 +6,28 @@ import {
     DecipherGCM,
 } from "crypto";
 import { logger } from "../utils/logger.js";
+import { config } from "../config/index.js";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
 const ALGORITHM = "aes-256-gcm" as const;
 const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 const ENCODING = "hex" as const;
 
-// ─── Types ────────────────────────────────────────────────────────────────────
 interface EncryptedParts {
     iv: string;
     authTag: string;
     encryptedData: string;
 }
 
-// ─── Private helpers ──────────────────────────────────────────────────────────
-// Cache key as module-level constant — validated once at startup
-// Avoids reading and validating process.env on every encrypt/decrypt call
-// Module loads once — this runs once — key is ready instantly after that
 let _cachedKey: Buffer | null = null;
 
 const getEncryptionKey = (): Buffer => {
     if (_cachedKey) return _cachedKey;
 
-    const key = process.env.ENCRYPTION_KEY;
-
-    if (!key) {
-        throw new Error("ENCRYPTION_KEY environment variable is not set");
-    }
-
-    if (key.length !== 32) {
-        throw new Error(
-            `ENCRYPTION_KEY must be exactly 32 characters. Current length: ${key.length}`,
-        );
-    }
-
-    _cachedKey = Buffer.from(key, "utf8");
+    // config.encryption.key is already validated at startup
+    // — guaranteed to exist and be exactly 32 characters
+    // — no need to re-validate here
+    _cachedKey = Buffer.from(config.encryption.key, "utf8");
     return _cachedKey;
 };
 
@@ -54,15 +35,6 @@ const getErrorMessage = (error: unknown): string => {
     return error instanceof Error ? error.message : "Unknown error";
 };
 
-// ─── Public functions ─────────────────────────────────────────────────────────
-
-/**
- * Encrypts a plain text string using AES-256-GCM
- *
- * @param plainText - The text to encrypt (e.g. WhatsApp access token)
- * @returns Encrypted string in format: iv:authTag:encryptedData
- * @throws Error if encryption fails or input is invalid
- */
 export const encrypt = (plainText: string): string => {
     if (!plainText || typeof plainText !== "string") {
         throw new Error("encrypt() requires a non-empty string");
@@ -71,7 +43,6 @@ export const encrypt = (plainText: string): string => {
     try {
         const key = getEncryptionKey();
         const iv = randomBytes(IV_LENGTH);
-
         const cipher: CipherGCM = createCipheriv(ALGORITHM, key, iv);
 
         const encrypted = Buffer.concat([
@@ -94,13 +65,6 @@ export const encrypt = (plainText: string): string => {
     }
 };
 
-/**
- * Decrypts an encrypted string back to plain text
- *
- * @param encryptedText - Encrypted string in format: iv:authTag:encryptedData
- * @returns Original plain text
- * @throws Error if decryption fails, data is tampered, or format is invalid
- */
 export const decrypt = (encryptedText: string): string => {
     if (!encryptedText || typeof encryptedText !== "string") {
         throw new Error("decrypt() requires a non-empty string");
@@ -146,19 +110,12 @@ export const decrypt = (encryptedText: string): string => {
     }
 };
 
-/**
- * Checks if a string is already encrypted
- * Useful to avoid double-encrypting a value
- *
- * @param text - String to check
- * @returns True if string matches encrypted format
- */
 export const isEncrypted = (text: string): boolean => {
     if (!text || typeof text !== "string") return false;
     const parts = text.split(":");
+    if (parts.length !== 3) return false;
+    const [first, second] = parts as [string, string, string];
     return (
-        parts.length === 3 &&
-        parts[0].length === IV_LENGTH * 2 &&
-        parts[1].length === AUTH_TAG_LENGTH * 2
+        first.length === IV_LENGTH * 2 && second.length === AUTH_TAG_LENGTH * 2
     );
 };
