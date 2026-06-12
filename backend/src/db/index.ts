@@ -1,10 +1,18 @@
+// src/db/index.ts
 import pg from "pg";
+import { Kysely, PostgresDialect } from "kysely";
+import { config } from "../config/index.js";
 import { logger } from "../utils/logger.js";
+import type { Database } from "./types.js";
 
 const { Pool } = pg;
 
+// ─── Connection pool ──────────────────────────────────────────────────────────
+// One pool shared between Kysely and raw query function
+// Kysely uses it for typed queries
+// raw query() used only by migrate.ts
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: config.db.url,
     ssl: { rejectUnauthorized: false },
     max: 10,
     idleTimeoutMillis: 30000,
@@ -15,43 +23,7 @@ pool.on("connect", () => {
     logger.info("New database connection established");
 });
 
-// Verify connection is reachable on startup with retry
-// Prevents server from accepting traffic before DB is ready
-export const waitForDatabase = async (
-    retries = 5,
-    delayMs = 2000,
-): Promise<void> => {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-            await pool.query("SELECT 1");
-            logger.info("Database connection verified");
-            return;
-        } catch (error) {
-            const message =
-                error instanceof Error ? error.message : "Unknown error";
-            logger.warn(
-                `Database connection attempt ${attempt}/${retries} failed`,
-                {
-                    error: message,
-                },
-            );
-            if (attempt === retries) {
-                throw new Error(
-                    `Could not connect to database after ${retries} attempts`,
-                );
-            }
-            // Wait before retrying — exponential backoff
-            await new Promise((resolve) =>
-                setTimeout(resolve, delayMs * attempt),
-            );
-        }
-    }
-};
-
 pool.on("error", (err: Error) => {
-    // Log but don't exit — pool errors are often transient network blips
-    // PostgreSQL pool recovers automatically from temporary disconnections
-    // Only exit on authentication errors — those won't recover on their own
     logger.error("Unexpected database pool error", { error: err.message });
 
     const fatalErrors = [
@@ -68,9 +40,49 @@ pool.on("error", (err: Error) => {
         logger.error("Fatal database error — shutting down");
         process.exit(1);
     }
-    // Non-fatal — log and let pool recover automatically
 });
 
+// ─── Kysely instance ──────────────────────────────────────────────────────────
+// Uses the same pg pool — no extra connections opened
+// Every query through db.* is fully typed
+// TypeScript will error if you access a column that doesn't exist
+export const db = new Kysely<Database>({
+    dialect: new PostgresDialect({ pool }),
+});
+
+// ─── Wait for database ────────────────────────────────────────────────────────
+export const waitForDatabase = async (
+    retries = 5,
+    delayMs = 2000,
+): Promise<void> => {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            await pool.query("SELECT 1");
+            logger.info("Database connection verified");
+            return;
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "Unknown error";
+            logger.warn(
+                `Database connection attempt ${attempt}/${retries} failed`,
+                { error: message },
+            );
+            if (attempt === retries) {
+                throw new Error(
+                    `Could not connect to database after ${retries} attempts`,
+                );
+            }
+            await new Promise((resolve) =>
+                setTimeout(resolve, delayMs * attempt),
+            );
+        }
+    }
+};
+
+// ─── Raw query ────────────────────────────────────────────────────────────────
+// Used ONLY by migrate.ts to run raw SQL migration files
+// All other code must use db.* (Kysely) for type safety
+// If you find yourself using query() outside migrate.ts — stop and use Kysely
 export const query = async (
     text: string,
     params?: unknown[],
@@ -94,6 +106,13 @@ export const query = async (
     }
 };
 
+// ─── Transaction helper ───────────────────────────────────────────────────────
+// For operations that must succeed or fail together
+// Usage:
+//   await transaction(async (client) => {
+//       await client.query("UPDATE tenants SET ...")
+//       await client.query("INSERT INTO messages ...")
+//   })
 export const transaction = async <T>(
     callback: (client: pg.PoolClient) => Promise<T>,
 ): Promise<T> => {
@@ -114,6 +133,7 @@ export const transaction = async <T>(
     }
 };
 
+// ─── Health check ─────────────────────────────────────────────────────────────
 export const isHealthy = async (): Promise<boolean> => {
     try {
         await pool.query("SELECT 1");
