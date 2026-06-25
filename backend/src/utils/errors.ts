@@ -1,12 +1,21 @@
+// utils/errors.ts
+//
+// Typed HTTP error hierarchy
+// Throw these anywhere in your code — app.ts global error handler catches them
+// and sends the correct HTTP status code automatically
+//
+// AppError.isOperational = true → show message to client
+// Plain Error (no isOperational) → show "Internal server error" in production
+
 export class AppError extends Error {
     public statusCode: number;
     public isOperational: boolean;
 
     constructor(message: string, statusCode: number) {
         super(message);
+        this.name = new.target.name; // ✅ "NotFoundError" not "Error"
         this.statusCode = statusCode;
         this.isOperational = true;
-        // Fix prototype chain — required when extending built-in classes in TypeScript
         Object.setPrototypeOf(this, new.target.prototype);
     }
 }
@@ -44,5 +53,21 @@ export class ConflictError extends AppError {
 export class TooManyRequestsError extends AppError {
     constructor(message = "Too many requests") {
         super(message, 429);
+    }
+}
+
+// ✅ Added — for when a tenant hits their plan's conversation/broadcast limit
+export class PlanLimitError extends AppError {
+    constructor(message = "Plan limit reached — please upgrade your plan") {
+        super(message, 429);
+    }
+}
+
+// ✅ Added — for when DB, Redis, or external APIs are temporarily unavailable
+export class ServiceUnavailableError extends AppError {
+    constructor(
+        message = "Service temporarily unavailable — please try again",
+    ) {
+        super(message, 503);
     }
 }
