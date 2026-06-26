@@ -1,5 +1,5 @@
-// types/express.d.ts
 import { JwtPayload } from "jsonwebtoken";
+import type { LocationData, ReactionData } from "../db/types.js";
 
 export interface AuthPayload extends JwtPayload {
     userId: string;
@@ -21,15 +21,14 @@ export interface TenantRecord {
     conversationsUsed: number;
     broadcastsUsed: number;
     overageEnabled: boolean;
-    billingCycleStart: Date; // added — needed for monthly reset logic
+    billingCycleStart: Date;
     stripeCustomerId: string | null;
     stripeSubId: string | null;
-    trialEndsAt: Date;
+    trialEndsAt: Date | null;    // ✅ nullable — paid tenants have null
     createdAt: Date;
     updatedAt: Date;
 }
 
-// Shape of a user loaded from database
 export interface UserRecord {
     id: string;
     tenantId: string;
@@ -37,13 +36,12 @@ export interface UserRecord {
     fullName: string | null;
     role: "owner" | "agent" | "viewer";
     lastLoginAt: Date | null;
-    loginAttempts: number; // needed for account lockout logic
-    lockedUntil: Date | null; // needed for account lockout logic
+    loginAttempts: number;
+    lockedUntil: Date | null;
     createdAt: Date;
     updatedAt: Date;
 }
 
-// Shape of a contact loaded from database
 export interface ContactRecord {
     id: string;
     tenantId: string;
@@ -61,11 +59,11 @@ export interface ContactRecord {
     dripStage: number;
     dripPaused: boolean;
     dripPausedReason: string | null;
-    dripJobId: string | null; // Bull job ID for cancellation
-    tags: string[]; // for broadcast filtering
-    assignedAgentId: string | null; // conversation ownership
+    dripJobId: string | null;
+    tags: string[];
+    assignedAgentId: string | null;
     assignedAt: Date | null;
-    optedOut: boolean; // legal opt-out
+    optedOut: boolean;
     optedOutAt: Date | null;
     optedOutReason: string | null;
     lastMessageAt: Date | null;
@@ -73,7 +71,6 @@ export interface ContactRecord {
     updatedAt: Date;
 }
 
-// Shape of a message loaded from database
 export interface MessageRecord {
     id: string;
     tenantId: string;
@@ -96,8 +93,8 @@ export interface MessageRecord {
     mediaMimeType: string | null;
     mediaCaption: string | null;
     mediaFilename: string | null;
-    locationData: Record<string, unknown> | null;
-    reactionData: Record<string, unknown> | null;
+    locationData: LocationData | null;    // ✅ specific type from db/types.ts
+    reactionData: ReactionData | null;    // ✅ specific type from db/types.ts
     aiGenerated: boolean;
     safetyFlagged: boolean;
     safetyReason: string | null;
@@ -111,7 +108,7 @@ export interface MessageRecord {
     waMessageId: string | null;
     createdAt: Date;
 }
-// Extend Express Request
+
 declare global {
     namespace Express {
         interface Request {

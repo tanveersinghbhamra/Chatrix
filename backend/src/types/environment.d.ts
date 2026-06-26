@@ -1,6 +1,5 @@
 // Declares the shape of process.env for TypeScript
 // Every environment variable your app uses must be declared here
-// TypeScript will know exactly what's available and what type it is
 
 declare global {
     namespace NodeJS {
@@ -24,9 +23,9 @@ declare global {
             META_APP_SECRET: string;
             META_VERIFY_TOKEN: string;
 
-            // Stripe
-            STRIPE_SECRET_KEY: string;
-            STRIPE_WEBHOOK_SECRET: string;
+            // Stripe — optional until Session 9
+            STRIPE_SECRET_KEY?: string;      // ✅ optional
+            STRIPE_WEBHOOK_SECRET?: string;  // ✅ optional
 
             // JWT
             JWT_ACCESS_SECRET: string;
