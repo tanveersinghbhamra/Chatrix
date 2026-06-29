@@ -815,3 +815,6 @@ Session 13 ⬜ Not started — Next.js dashboard (classmate)
 6. Ask before any architectural decision not covered here
 7. The naming conventions, error patterns, config patterns, DB patterns 
    are all intentional — do not "improve" them unilaterally
+8. The very important rule is always think properly, think of all edge cases and 
+    generate high prodction grade code. Do not dump all code at one. Generate one file at each time 
+    sequentially and explain the file properly with pros and cons and its necessities thoroughly.

@@ -203,6 +203,16 @@ export const receiveWebhook = async (
     // Wrapped in try/catch: after res.send() we are outside Express's error handler.
     // Any uncaught throw here becomes an unhandledRejection → process crash.
     try {
+        // Guard: payload.entry can be absent in malformed Meta payloads during incidents.
+        // Without this, iterating undefined throws TypeError caught by outer catch —
+        // but the log message would be generic. This makes it explicit and skippable.
+        if (!Array.isArray(payload.entry)) {
+            logger.warn("Webhook payload missing entry array — ignoring", {
+                requestId: req.id,
+            });
+            return;
+        }
+
         for (const entry of payload.entry) {
             const waAccountId = entry.id;
 
@@ -403,7 +413,10 @@ const handleInboundMessage = async ({
         contactName,
         messageType,
         messageBody: extractBody(message),
-        timestamp: parseInt(message.timestamp, 10),
+        // Guard: parseInt returns NaN if timestamp is missing or malformed.
+        // Fall back to Date.now() so the DB never receives NaN.
+        // Meta timestamps are always present in practice but typing is string.
+        timestamp: parseInt(message.timestamp, 10) || Date.now(),
         // Media
         mediaId: extractMediaId(message),
         mediaMimeType: extractMimeType(message),
