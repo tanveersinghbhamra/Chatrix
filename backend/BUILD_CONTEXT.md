@@ -804,3 +804,14 @@ Session 11 ⬜ Not started — Analytics + weekly reports
 Session 12 ⬜ Not started — Deploy to Render + Meta webhook setup
 Session 13 ⬜ Not started — Next.js dashboard (classmate)
 ```
+
+## ⚠️ Rules For Claude Reading This Document
+
+1. Follow ALL patterns in this document exactly — they were deliberately chosen
+2. Do NOT suggest changing Session code unless there is a clear bug
+3. Do NOT introduce packages not already in package.json without asking first
+4. Do NOT deviate from the folder structure shown
+5. If something seems wrong, FLAG IT as a note but build the established way
+6. Ask before any architectural decision not covered here
+7. The naming conventions, error patterns, config patterns, DB patterns 
+   are all intentional — do not "improve" them unilaterally

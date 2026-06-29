@@ -32,7 +32,11 @@ const redis = new Redis({
 });
 
 // ─── Service health checker ────────────────────────────────────────────────────
-const checkServices = async (): Promise<{ db: boolean; redis: boolean }> => {
+const checkServices = async (): Promise<{
+    db: boolean;
+    redis: boolean;
+    queue: boolean;
+}> => {
     const db = await isHealthy();
     let redisOk = false;
     try {
@@ -41,7 +45,8 @@ const checkServices = async (): Promise<{ db: boolean; redis: boolean }> => {
     } catch {
         redisOk = false;
     }
-    return { db, redis: redisOk };
+    const queue = await isQueueHealthy();
+    return { db, redis: redisOk, queue };
 };
 
 // ─── Express app ───────────────────────────────────────────────────────────────
@@ -105,8 +110,8 @@ app.use(requestId);
 
 // ─── Health check ──────────────────────────────────────────────────────────────
 app.get("/health", async (_req: Request, res: Response): Promise<void> => {
-    const { db, redis: redisOk } = await checkServices();
-    const status = db && redisOk ? "healthy" : "degraded";
+    const { db, redis: redisOk, queue } = await checkServices();
+    const status = db && redisOk && queue ? "healthy" : "degraded";
 
     res.status(status === "healthy" ? 200 : 503).json({
         status,
@@ -115,13 +120,18 @@ app.get("/health", async (_req: Request, res: Response): Promise<void> => {
         services: {
             database: db ? "connected" : "disconnected",
             redis: redisOk ? "connected" : "disconnected",
+            queue: queue ? "connected" : "disconnected",
         },
     });
 });
 
+// ─── Message processor (registers Bull worker on startup) ─────────────────────
+import "./jobs/message.processor.js";
+import { isQueueHealthy, closeQueue } from "./services/queue.service.js";
+
 // ─── Routes ────────────────────────────────────────────────────────────────────
-// Session 2:  import webhookRouter from './routes/webhook.route.js';
-//             app.use('/webhook', webhookRouter);
+import webhookRouter from "./routes/webhook.routes.js";
+app.use("/webhook", webhookRouter);
 // Session 6:  import authRouter from './routes/auth.route.js';
 //             app.use('/api/auth', authRouter);
 // Session 7:  import contactsRouter from './routes/contacts.route.js';
@@ -177,7 +187,7 @@ try {
 
 const server = app.listen(PORT, async () => {
     try {
-        const { db, redis: redisOk } = await checkServices();
+        const { db, redis: redisOk, queue } = await checkServices();
 
         console.log("");
         console.log("  🚀 Chatrix API is running!");
@@ -189,6 +199,9 @@ const server = app.listen(PORT, async () => {
         );
         console.log(
             `  🔴 Redis       →  ${redisOk ? "✅ Connected" : "❌ Disconnected"}`,
+        );
+        console.log(
+            `  📬 Queue       →  ${queue ? "✅ Connected" : "❌ Disconnected"}`,
         );
         console.log(`  🌍 Environment →  ${config.nodeEnv}`);
         console.log("");
@@ -203,8 +216,13 @@ const server = app.listen(PORT, async () => {
 const shutdown = (signal: string): void => {
     logger.info(`${signal} received — shutting down gracefully`);
     server.close(() => {
-        logger.info("Server closed — exiting");
-        process.exit(0);
+        // Close Bull queue after HTTP server stops accepting requests.
+        // This releases the ioredis connection cleanly — important on Upstash
+        // free tier which has a hard connection limit.
+        closeQueue().finally(() => {
+            logger.info("Server and queue closed — exiting");
+            process.exit(0);
+        });
     });
     setTimeout(() => {
         logger.error("Forced shutdown after timeout");
