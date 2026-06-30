@@ -9,7 +9,7 @@
 //   2. Parse payload            — extract entries from Meta's envelope structure
 //   3. Return 200 immediately   — Meta retries if we take > 20s
 //   4. Idempotency check        — skip already-processed events (webhook_events table)
-//   5. Resolve tenant           — find tenant by wa_account_id
+//   5. Resolve tenant           — find tenant by wa_phone_number_id (Meta phone_number_id)
 //   6. Check tenant active      — skip suspended/cancelled tenants
 //   7. Check plan limits        — skip if at conversation cap
 //   8. Enqueue Bull job         — actual processing async in message.processor.ts
@@ -36,7 +36,8 @@ interface MetaWebhookPayload {
 }
 
 interface MetaEntry {
-    id: string; // wa_account_id (WABA ID)
+    id: string; // WABA ID — NOT used for tenant resolution (one WABA can have multiple
+    // phone numbers). We use value.metadata.phone_number_id instead.
     changes: MetaChange[];
 }
 
@@ -214,8 +215,6 @@ export const receiveWebhook = async (
         }
 
         for (const entry of payload.entry) {
-            const waAccountId = entry.id;
-
             // Guard: Meta has sent malformed payloads with missing changes during incidents
             if (!Array.isArray(entry.changes)) continue;
 
@@ -223,6 +222,12 @@ export const receiveWebhook = async (
                 if (change.field !== "messages") continue;
 
                 const value = change.value;
+                // Tenant resolution uses phone_number_id, NOT entry.id (the WABA ID).
+                // One WABA can contain multiple phone numbers; phone_number_id is the
+                // correct unique identifier for "which Chatrix tenant is this message for".
+                // This matches tenants.wa_phone_number_id, set when a tenant connects
+                // their WhatsApp number via Meta Embedded Signup.
+                const phoneNumberId = value.metadata.phone_number_id;
 
                 // ── Inbound messages ─────────────────────────────────────────
                 // Use Promise.allSettled — not Promise.all — so one failed message
@@ -232,7 +237,7 @@ export const receiveWebhook = async (
                 if (value.messages && value.messages.length > 0) {
                     const messagePromises = value.messages.map((message) =>
                         handleInboundMessage({
-                            waAccountId,
+                            phoneNumberId,
                             message,
                             contacts: value.contacts ?? [],
                             requestId: req.id,
@@ -283,14 +288,14 @@ export const receiveWebhook = async (
 // ─── Handle a single inbound message ─────────────────────────────────────────
 
 interface HandleInboundParams {
-    waAccountId: string;
+    phoneNumberId: string;
     message: MetaMessage;
     contacts: MetaContact[];
     requestId: string;
 }
 
 const handleInboundMessage = async ({
-    waAccountId,
+    phoneNumberId,
     message,
     contacts,
     requestId,
@@ -328,19 +333,26 @@ const handleInboundMessage = async ({
         return;
     }
 
-    // ── Step 5: Resolve tenant from wa_account_id ────────────────────────────
+    // ── Step 5: Resolve tenant from wa_phone_number_id ───────────────────────
+    // phone_number_id (from value.metadata in the Meta payload) uniquely
+    // identifies which WhatsApp number received this message — and therefore
+    // which Chatrix tenant it belongs to. This matches tenants.wa_phone_number_id,
+    // set when the tenant connects their number via Meta Embedded Signup.
     const tenant = await db
         .selectFrom("tenants")
         .select(["id", "plan_status", "conversations_used"])
-        .where("wa_account_id", "=", waAccountId)
+        .where("wa_phone_number_id", "=", phoneNumberId)
         .executeTakeFirst();
 
     if (!tenant) {
-        logger.warn("No tenant found for wa_account_id — ignoring message", {
-            requestId,
-            messageId,
-            waAccountId,
-        });
+        logger.warn(
+            "No tenant found for wa_phone_number_id — ignoring message",
+            {
+                requestId,
+                messageId,
+                phoneNumberId,
+            },
+        );
         return;
     }
 

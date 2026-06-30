@@ -126,7 +126,10 @@ export interface TenantsTable {
 
     wa_number: string | null;
     wa_phone_number_id: string | null;
-    wa_account_id: string | null;
+    // NOTE: wa_account_id was removed — no migration ever created this column.
+    // Tenant resolution from Meta webhooks uses wa_phone_number_id instead,
+    // matched against value.metadata.phone_number_id in the webhook payload.
+    // See webhook.controller.ts.
     wa_access_token: string | null; // AES-256-GCM encrypted
 
     bot_config: ColumnType<BotConfig, BotConfig | string, BotConfig | string>;

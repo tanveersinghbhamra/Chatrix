@@ -29,7 +29,7 @@ import { logger } from "../utils/logger.js";
 
 export interface MessageJobData {
     messageId: string; // wa_message_id from Meta — idempotency key
-    tenantId: string; // resolved from wa_account_id in webhook controller
+    tenantId: string; // resolved from wa_phone_number_id in webhook controller
     contactPhone: string; // sanitized (no +, no spaces) — used for contact upsert
     contactName: string | null; // from Meta profile.name — may be absent
     messageType: string; // text | image | audio | video | document | location | sticker | reaction | interactive | unsupported
@@ -64,7 +64,17 @@ export interface MessageJobData {
 //   - TLS is required
 //   - enableReadyCheck must be false (Upstash doesn't support the Redis READY check command)
 //   - maxRetriesPerRequest must be null (Bull requires this for its blocking commands)
-//   - lazyConnect: true — don't connect until first operation (faster startup)
+//
+// NOTE: lazyConnect was removed (2026-06-30) after live testing revealed it
+// caused the consumer/processor connection to never properly initialize.
+// Bull creates separate underlying ioredis connections for producer (add jobs)
+// and consumer (process jobs / blocking pop). With lazyConnect: true, the
+// producer connection activates on the first .add() call, but the consumer
+// connection used internally by .process() did not reliably activate —
+// jobs enqueued successfully but were never picked up by the worker.
+// Confirmed via live test against real Upstash Redis: removing lazyConnect
+// fixed processor pickup immediately. The minor startup delay this adds is
+// a worthwhile tradeoff for correct behavior.
 
 const getRedisConfig = (): Bull.QueueOptions["redis"] => {
     const url = new URL(config.upstash.redisUrl);
@@ -75,7 +85,6 @@ const getRedisConfig = (): Bull.QueueOptions["redis"] => {
         tls: {},
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
-        lazyConnect: true,
     };
 };
 
