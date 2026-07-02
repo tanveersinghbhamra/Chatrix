@@ -125,7 +125,10 @@ backend/
 │   │   ├── requestId.middleware.ts         ✅ complete
 │   │   └── validate.middleware.ts          ✅ complete
 │   ├── services/
+│   │   ├── claude.service.ts              🟡 complete (built + reviewed, not live-tested)
 │   │   ├── crypto.service.ts              ✅ complete
+│   │   ├── queue.service.ts               ✅ complete (LIVE VERIFIED)
+│   │   ├── safety.service.ts              ✅ complete (LIVE VERIFIED — 49/49 tests)
 │   │   └── whatsapp.service.ts            ✅ complete (all media functions added)
 │   ├── types/
 │   │   ├── environment.d.ts               ✅ complete
@@ -134,8 +137,17 @@ backend/
 │   │   ├── errors.ts                      ✅ complete
 │   │   ├── helpers.ts                     ✅ complete
 │   │   └── logger.ts                      ✅ complete
+│   ├── controllers/
+│   │   └── webhook.controller.ts          ✅ complete (LIVE VERIFIED)
+│   ├── jobs/
+│   │   └── message.processor.ts           ✅ stub complete (LIVE VERIFIED — full logic Session 5)
+│   ├── routes/
+│   │   └── webhook.routes.ts              ✅ complete
 │   └── validators/
 │       └── auth.validator.ts              ✅ complete
+├── scripts/
+│   ├── test-claude-service.ts             🟡 ready to run (needs real ANTHROPIC_API_KEY)
+│   └── test-safety-service.ts             ✅ LIVE VERIFIED — 49/49 passing 2026-07-02
 ├── .env                                   ✅ configured
 ├── .env.example                           ✅ committed
 ├── .gitignore                             ✅ configured
@@ -477,7 +489,7 @@ See Error Hierarchy section above.
 Session 1  ✅ — Foundation, DB, security, types, migrations, whatsapp service (LIVE VERIFIED against real Supabase + Upstash, 2026-06-30)
 Session 2  ✅ — WhatsApp webhook receiver (LIVE VERIFIED end-to-end against real Supabase + Upstash, 2026-06-30 — see "Session 2 Live Verification" below)
 Session 3  🟡 — Claude AI service (claude.service.ts built + reviewed, NOT yet live-tested — blocked on real ANTHROPIC_API_KEY)
-Session 4  ⬜ — Safety validator
+Session 4  ✅ — Safety validator (LIVE VERIFIED 2026-07-02 — 49/49 tests passing, zero cost, no external APIs)
 Session 5  ⬜ — Message processor Bull job
 Session 6  ⬜ — Auth (signup, login, JWT, refresh tokens)
 Session 7  ⬜ — Contacts + messages API routes
@@ -608,6 +620,14 @@ import Bull from "bull";
 ### types/express.d.ts
 
 - [ ] **Session 6** — Decide: keep `TenantRecord`/`UserRecord`/`ContactRecord`/`MessageRecord` camelCase interfaces OR use Kysely `Selectable<T>` types directly. Currently both exist — duplication. Kysely types are snake_case (match DB). Express types are camelCase. A mapping layer is needed.
+
+### safety.service.ts
+
+- [ ] Arabic price mentions (e.g. "١٢٠٠٠٠٠ درهم") not detected — regex-matching Arabic numerals is a separate problem. Claude's system prompt instructs it not to quote prices in any language; if it does so in Arabic, this check won't catch it. Acceptable for now.
+- [ ] Building/tower names with numbers (e.g. "Marina Gate Tower 2", "Damac Hills 2") not flagged — these are real property names, not invented addresses. Intentionally not flagged.
+- [ ] `allow_prices` escape hatch in `botConfig.safetyRules` not yet surfaced in dashboard UI (Session 13). Convention: add `"allow_prices"` to safetyRules array to skip price check for businesses like restaurants/supermarkets that need to quote prices.
+- [ ] `no_competitor: CompanyName` convention in safetyRules not yet documented in onboarding UI (Session 13).
+- [ ] `botConfig.contactPhone` and `botConfig.contactEmail` fields don't exist yet — contact info leak check currently flags ALL phone numbers/emails in replies, including the business's own. When Session 7 adds these fields to tenant profile, whitelist them in the check.
 
 ### claude.service.ts
 
@@ -887,10 +907,14 @@ npm run lint:types  # tsc --noEmit — TypeScript check (0 errors currently)
 
 ```
 ✅ npm run lint:types → 0 errors
-✅ npm run dev → server starts, DB connected
+✅ npm run dev → server starts, DB connected, Redis connected, Bull queue connected
 ✅ npm run migrate → all 3 migrations applied, skip logic works
 ✅ npm audit → 0 vulnerabilities
+✅ /health → 200 healthy (DB + Redis + Queue all connected, LIVE VERIFIED)
+✅ Webhook pipeline LIVE VERIFIED: signature → idempotency → tenant → enqueue → processor pickup
+✅ Safety validator LIVE VERIFIED: 49/49 tests passing (npx tsx scripts/test-safety-service.ts)
 ⚠️  Redis: recreated June 27 (was deleted after inactivity) — update .env with new credentials
+🟡  Session 3 (claude.service.ts): built + reviewed, blocked on real ANTHROPIC_API_KEY
 ```
 
 ---
@@ -910,7 +934,7 @@ npm run lint:types  # tsc --noEmit — TypeScript check (0 errors currently)
 Session 1  ✅ Complete — Foundation, DB, security, types, migrations, full WhatsApp service. LIVE VERIFIED 2026-06-30.
 Session 2  ✅ Complete — WhatsApp webhook receiver, Bull queue, processor stub. LIVE VERIFIED end-to-end 2026-06-30 against real Supabase + Upstash (see "Session 2 Live Verification" section above). 2 real runtime bugs found and fixed during live testing (wa_account_id phantom column, Bull lazyConnect breaking job pickup) — neither was catchable by static review or tsc.
 Session 3  🟡 In progress — claude.service.ts built + reviewed (9 static issues fixed). NOT yet live-tested — blocked on real ANTHROPIC_API_KEY (not yet generated).
-Session 4  ⬜ Not started — Safety validator
+Session 4  ✅ Complete — safety.service.ts built, reviewed, LIVE VERIFIED 2026-07-02. 8 safety checks: empty reply, reply too long, price invention, appointment commitment, availability claim, address invention, contact info leak, competitor mention. 49/49 tests passing. Zero cost — pure logic, no external APIs.
 Session 5  ⬜ Not started — Message processor Bull job
 Session 6  ⬜ Not started — Auth (signup, login, JWT, refresh tokens)
 Session 7  ⬜ Not started — Contacts + messages API routes
