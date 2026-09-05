@@ -1,5 +1,5 @@
 import { JwtPayload } from "jsonwebtoken";
-import type { LocationData, ReactionData } from "../db/types.js";
+import type { LocationData, ReactionData, ReportChannel } from "../db/types.js";
 
 export interface AuthPayload extends JwtPayload {
     userId: string;
@@ -24,7 +24,8 @@ export interface TenantRecord {
     billingCycleStart: Date;
     stripeCustomerId: string | null;
     stripeSubId: string | null;
-    trialEndsAt: Date | null;    // ✅ nullable — paid tenants have null
+    trialEndsAt: Date | null; // ✅ nullable — paid tenants have null
+    reportChannel: ReportChannel; // ✅ Fixed — was missing, present in TenantsTable
     createdAt: Date;
     updatedAt: Date;
 }
@@ -38,6 +39,12 @@ export interface UserRecord {
     lastLoginAt: Date | null;
     loginAttempts: number;
     lockedUntil: Date | null;
+    personalPhone: string | null; // ✅ Fixed — was missing, present in UsersTable
+    // Note: passwordHash is deliberately NOT included here, even though it exists
+    // on UsersTable. req.currentUser is attached to every authenticated request —
+    // the hash should never be reachable through it, even though it's just a bcrypt
+    // hash. If any future code genuinely needs it, fetch it directly from the DB
+    // for that specific purpose, don't add it back here.
     createdAt: Date;
     updatedAt: Date;
 }
@@ -93,8 +100,8 @@ export interface MessageRecord {
     mediaMimeType: string | null;
     mediaCaption: string | null;
     mediaFilename: string | null;
-    locationData: LocationData | null;    // ✅ specific type from db/types.ts
-    reactionData: ReactionData | null;    // ✅ specific type from db/types.ts
+    locationData: LocationData | null; // ✅ specific type from db/types.ts
+    reactionData: ReactionData | null; // ✅ specific type from db/types.ts
     aiGenerated: boolean;
     safetyFlagged: boolean;
     safetyReason: string | null;

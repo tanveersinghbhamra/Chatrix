@@ -92,7 +92,10 @@ const processMessage = async (job: Bull.Job<MessageJobData>): Promise<void> => {
 // Wrapped in try/catch: messageQueue.process() connects to Redis internally.
 // If Redis is unreachable at startup, this would throw and crash app.ts before
 // waitForDatabase() has run. We log the error and let the app start anyway —
-// the queue will reconnect when Redis becomes available (lazyConnect: true).
+// If Redis is genuinely down, this specific startup log will fire, but
+// ioredis's built-in retry logic (not lazyConnect — that was removed, see
+// queue.service.ts Known Gaps) will keep attempting to reconnect in the
+// background once Redis becomes available again.
 
 try {
     messageQueue.process(5, processMessage);

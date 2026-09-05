@@ -1,5 +1,3 @@
-// services/queue.service.ts
-//
 // Bull message processing queue backed by Upstash Redis.
 // Single queue instance — imported by:
 //   - webhook controller  → enqueueMessage()
@@ -159,7 +157,7 @@ export const isQueueHealthy = async (): Promise<boolean> => {
     }
 };
 
-// ─── Graceful shutdown ────────────────────────────────────────────────────────
+// ─── Graceful shutdown ───────────────────────────────────────────────────────
 // Called from app.ts SIGTERM/SIGINT handler after server.close().
 // Waits for in-flight jobs to finish (up to the timeout Bull enforces),
 // then closes the ioredis connection cleanly.

@@ -11,6 +11,23 @@ WhatsApp AI SaaS. Any business signs up, connects their WhatsApp number, gets an
 
 ---
 
+## Competitive Landscape (added after Meta Business Agent launch, Aug 2026)
+
+Meta launched a native "Meta Business Agent" globally June 3, 2026 — AI that answers questions, qualifies leads, books appointments, activatable directly in the WhatsApp Business app, no coding, no third-party subscription. Token billing for the API tier started Aug 1, 2026 (~$2/1M tokens, ~4-5 cents/message, no markup). This means "AI that answers WhatsApp messages 24/7" is no longer a differentiator on its own — Meta gives that away near-cost.
+
+**Confirmed gap Chatrix still fills:** Meta's native agent has no CRM integrations (Salesforce, HubSpot), no MCP support, no integration marketplace, can't read/write external systems (CRM/ERP/Shopify) in its self-serve tier.
+
+**What Chatrix actually sells now, in priority order:**
+1. Predictable flat pricing (AED 149/299/599) vs. Meta's per-message billing with no floor
+2. Business-type-specific safety guardrails (`safety.service.ts`'s 8 checks) — tailored, not generic
+3. Integrations to a client's other tools — the confirmed gap in Meta's own offering
+4. Multi-agent team collaboration (Session 13) — Meta's native tool targets solo/small operators
+5. A real person behind it — personal onboarding/support, not a self-serve app screen
+
+**Strategy vs. DoubleTick/Wati-style competitors:** stay generic across business types (matches existing architecture — `business_type` field, flexible `bot_config` JSONB, configurable `safetyRules` per tenant, all already built this way). Differentiation comes from configuration quality per client, not from narrowing to one vertical — a well-configured `bot_config` and tailored safety rules should make each client's bot feel purpose-built for their business, even on a shared, generic platform. Win on price and flexibility for small single-operator businesses across any industry, underserved by DoubleTick's team-oriented pricing and Meta's one-size-fits-all native agent.
+
+**Practical consequence:** session build order (below) is unchanged — this only changes how Chatrix gets pitched to real clients in Track C of the roadmap, and pulls basic outbound-webhook integration hooks earlier in priority (see Session 7/10 note).
+
 ## Team
 
 Two final year CS graduates, Pune, India. React + Node.js + TypeScript. 1–2 hrs/day each. Tanveer owns the backend. Classmate owns the React dashboard (Session 13).
@@ -202,6 +219,7 @@ WhatsApp access tokens encrypted before DB storage using `crypto.service.ts`. Fo
 ### 5. Refresh token rotation
 
 Every use of a refresh token invalidates it (`used = true`) and issues a new one. Prevents stolen token reuse. Stored as bcrypt hash. Multi-device: one row per device session in `refresh_tokens` table.
+Known limit — stated explicitly so it isn't assumed to be a complete solution: rotation only protects against the scenario where an attacker's stolen copy and the real user's copy are both still in use, competing — whichever one refreshes first invalidates the other. If an attacker gains exclusive, ongoing possession of both tokens (the real user never uses their copies again), rotation does nothing — the attacker can refresh indefinitely, extending access forever, indistinguishable from the real user by the token mechanism alone. This is not a bug specific to this implementation; it's an inherent limit of bearer-token authentication generally. Mitigating this requires the two additional mechanisms below (absolute session lifetime, anomaly detection) — rotation alone is not sufficient for this scenario.
 
 ### 6. Drip job tracking
 
@@ -238,6 +256,50 @@ Meta webhook endpoint uses `express.raw({ type: 'application/json' })` BEFORE `e
 ### 14. `trust proxy: 1`
 
 Required on Render. Without it, `req.ip` returns Render's internal proxy IP for all requests. Rate limiting would treat all users as one IP — effectively disabled. `1` = trust exactly one proxy (Render's load balancer).
+
+### 15. Token storage — HttpOnly cookies, decided and implemented in Session 6
+
+Access and refresh tokens are set by the Session 6 auth controller as HttpOnly; Secure; SameSite=Strict cookies (res.cookie(...)), not returned in the JSON response body as plain strings for the frontend to store manually. This is a Session 6 implementation decision — documented here specifically so Session 13 (frontend, built separately) doesn't need to guess it from reading controller code.
+
+Why: HttpOnly means client-side JavaScript cannot read the cookie under any circumstance — even a successful XSS injection on the dashboard (the most realistic token-theft path identified for this product, since customer-controlled text like contact names flows into admin-facing UI) gets nothing, because there is nothing exposed to steal. The alternative (returning tokens in the JSON body for localStorage/manual header attachment) would let any injected script read the token directly via localStorage.getItem(...).
+
+Trade-off this requires: cookies are attached to requests automatically by the browser, which introduces CSRF exposure that a Bearer-token-in-header approach doesn't have. SameSite=Strict closes this for Chatrix's current setup (first-party dashboard + own API, no cross-site embedding use case) — this flag is not optional, it's required for the cookie approach to actually be safe, not just convenient.
+
+Consequence for Session 13: the frontend must use credentials: 'include' on fetch/axios calls and must NOT attempt to read a token from the response body or manually attach an Authorization header — there is no token exposed to the frontend to attach. app.ts's CORS config already anticipates this (credentials: true is already set) — no backend rework needed there.
+
+Future note, not current scope: if Chatrix ever exposes a public API for third-party developer integrations, that use case cannot use cookies (cookies are a browser-only concept) and would need Bearer-token auth as a separate, additional mechanism alongside the dashboard's cookie-based auth — not a replacement for it. Not a decision needed now; flagged so it isn't a surprise later.
+
+### 16. Absolute session lifetime cap (Session 6 decision, not yet built)
+
+JWT_REFRESH_EXPIRY=7d is currently a sliding window — each rotation resets the clock to a fresh 7 days from that refresh, meaning continuous use (legitimate or by an attacker with exclusive token possession) could theoretically extend a session indefinitely with no forced re-authentication ever occurring. This needs a separate, independent cap: track the original login timestamp per session chain (e.g. a session_started_at column on the first refresh_tokens row of a chain, carried forward through each rotation), and reject refresh attempts past a fixed ceiling — e.g. 30 days from original login — regardless of how recently the token was last rotated. This forces periodic full re-authentication (password re-entry) that no amount of refreshing can bypass. Not yet built — needs to be a concrete Session 6 task, not assumed to already exist because rotation exists.
+
+### 17. Bot assignment — per-conversation ON/OFF switch, business-controlled, no automatic timers
+
+Every contact has `bot_assigned: boolean` (default `true`). When `true`, Claude handles inbound messages normally, with no added delay. When `false`, the bot never processes that conversation at all — inbound messages are stored and a notification is raised, but Claude is never called.
+
+**Why this design, and what was rejected:** an earlier design considered (a) a short delay before every bot reply to give a human a window to intercept, and (b) automatic bot resumption after a period of human inactivity. Both were rejected: (a) because it would slow down every single reply, for every tenant, to protect against a rare race condition; (b) because auto-resuming risks the bot re-engaging while a human still considers themselves responsible for the conversation, with no reliable signal that they're actually done. `bot_assigned` only ever changes through an explicit action — never a timer, never an automatic trigger. This keeps the bot at full speed for the overwhelming majority of conversations where no human is involved, while giving businesses complete, explicit control when they want it.
+
+**What flips it to `false` automatically (system-triggered, not requiring a manual click):**
+- Claude's structured output includes `humanRequested: boolean` for the current message. If `true`, `bot_assigned` flips to `false` immediately, in the same processing pass — no delay, no dependency on the customer sending another message.
+- A deterministic keyword/phrase check (configurable per tenant, e.g. `["talk to a person", "human agent", "real person"]`) runs on every inbound message *before* Claude is even called, as an independent, non-AI safety net against Claude failing to detect an unusually-phrased request.
+- Interactive button tap, where the customer explicitly selects a "Talk to an Agent"-style option (via `sendInteractiveButtons`, already built in `whatsapp.service.ts`). This is the most reliable of the three detection methods — unlike Claude's judgment or the keyword check, it involves no language interpretation at all: the customer's tap returns a fixed `button_reply.id` (e.g. `"talk_to_agent"`) that the processor checks directly, bypassing Claude entirely for that message. A "send a voice recording" button option was considered and rejected — a button can only report back which option was tapped, it cannot trigger microphone recording on the customer's device, which WhatsApp does not expose to businesses; the customer can already send a voice note at any time without prompting.
+- The moment any human staff member sends a manual reply to a contact (`messages.ai_generated = false`), `bot_assigned` flips to `false` automatically for that contact — a human replying is itself the strongest possible signal they're taking over.
+
+**What flips it back to `true`:** only an explicit action by a staff member in the dashboard. No automatic resume, ever, at any interval.
+
+**Per-tenant defaults:** `tenants.bot_config.defaultBotAssignment: boolean` controls whether *new* contacts start with the bot on or off, set by each business per their own workflow preference.
+
+**When to offer interactive buttons at all — Claude decides, not fixed code rules.** Claude's structured response includes an additional field, `suggestButtons: string[] | null` (max 3 short option strings, or `null`). The system prompt instructs Claude to populate this only at a genuine conversational decision point (e.g. availability just confirmed, pricing discussed, customer seems ready for a next step) — not on routine back-and-forth, simple factual answers, or early-conversation exchanges. If `suggestButtons` is non-null, the processor calls `sendInteractiveButtons` with those options instead of a plain text send; if `null`, a normal text reply is sent. This mirrors how `score`/`intent`/`urgency_signals` are already Claude-judged rather than rule-based, and is an acceptable, non-deterministic tradeoff for *when* to show buttons — separate from and independent of the fully deterministic tap-detection logic above, which is what actually matters for reliably triggering handoff.
+
+### 18. Conversation summary generation — delayed by exactly one turn, never same-call
+
+`contacts.conversation_summary` is never written in the same Claude call that produces the current reply. Instead, each call writes a summary of the *previous* turn's exchange — which by that point has already passed through the safety check and reflects the real, final message that was actually sent — never Claude's original, possibly-modified-or-blocked draft.
+
+**Why:** the safety check runs *after* Claude produces a reply, and can modify or block it. If Claude summarized its own reply in the same call, the summary could describe something that was never actually sent to the customer (e.g. summarizing an invented price the safety layer then blocked). Delaying the summary by one turn guarantees it only ever describes finalized, real history.
+
+**What is NOT delayed, and never has been:** the current inbound message (always live) and the last 6 raw messages (always fetched fresh from `messages`, always accurate regardless of summary timing). Any real-time decision — including human handoff detection — is made from these, never from the summary. The summary exists purely to compress older history beyond the 6-message window; it plays no role in the bot's ability to respond correctly to what's happening right now.
+
+**Exception — immediate re-summarization on bot re-assignment:** if a human has handled a contact for multiple messages (potentially far more than 6) before flipping `bot_assigned` back to `true`, the normal one-turn-delayed mechanism is insufficient — the last 6 raw messages could be low-information (quick acknowledgments) and the delayed summary may not have captured the human-handled stretch at all. The moment `bot_assigned` flips back to `true`, trigger one dedicated Claude call summarizing everything since it was last set to `false`, and write it immediately — before the bot's next reply, not on the normal one-turn delay. Debounce this by ~60 seconds after the flip (only fire if still `true` at that point) to avoid wasted calls during rapid on/off toggling.
 
 ---
 
@@ -577,7 +639,93 @@ import Bull from "bull";
 
 ---
 
+## Session 6 — Auth Security Checklist (Manual Pass Before Marking Complete)
+
+This is a one-time, concrete checklist — not an ongoing habit like the section above. Run through it once Session 6's auth code is built, before marking the session ✅ complete. Several items here are already implied by existing architecture decisions (Refresh token rotation, Per-tenant email uniqueness) — this checklist makes them explicit and testable rather than just described in prose.
+
+**Password handling**
+- [ ] Confirm bcrypt cost factor is explicitly set (don't rely on library default silently) — 10-12 rounds is the current reasonable baseline; document whichever is chosen and why.
+- [ ] Confirm `passwordSchema`'s 72-char max is enforced server-side, not just documented — bcrypt silently truncates beyond 72 bytes, so a longer password would appear to "work" at signup but fail confusingly at login if truncation happens inconsistently.
+- [ ] Confirm password reset tokens are single-use and time-limited, and that requesting a reset doesn't reveal whether the email exists in the system (avoid user enumeration via response timing or message differences).
+
+**JWT specifics**
+- [ ] Confirm `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` are genuinely different values, not the same secret reused — a leaked access token secret should not also compromise refresh tokens.
+- [ ] Confirm the JWT payload (`userId`, `tenantId`, `role`, `email`) contains nothing more sensitive than necessary — JWTs are base64-encoded, not encrypted; anyone holding a token can read its payload.
+- [ ] Confirm expired/invalid JWT verification failures return a generic 401, not a message distinguishing "expired" vs "invalid signature" vs "malformed" — that distinction is only useful to an attacker probing the system.
+- [ ] Confirm `role` in the JWT is checked server-side on every protected route, not just used to conditionally render UI on the frontend later (Session 13). A JWT with a tampered role claim should fail signature verification, but this is worth a deliberate test, not an assumption.
+
+**Refresh token rotation (validates the design already documented above)**
+- [ ] Live-test that reusing an already-rotated (invalidated) refresh token is rejected — this is the actual security property refresh rotation exists for; test it directly rather than trusting the code reads correctly.
+- [ ] Confirm refresh tokens are stored as bcrypt hashes in `refresh_tokens` (per existing design), never in plaintext, and confirm a DB read of that table wouldn't yield usable tokens directly.
+- [ ] Confirm logout invalidates the specific device's refresh token, and decide/document whether "logout everywhere" (invalidate all rows for a user) is in scope for Session 6 or deferred.
+- [ ] Confirm a maximum total session lifetime is enforced independently of rotation (see Key Architecture Decision #16) — a refresh chain that's been continuously renewed must still eventually force a real password re-login, not refresh forever.
+- [ ] Decide and document the actual ceiling (30 days suggested as a starting point) — this is a product/UX tradeoff (security vs. how often users tolerate re-login), not a fixed correct number — make the call deliberately.
+
+**Anomaly signals (basic, Session 6/7 — not full fraud detection, just cheap first signals)**
+- [ ] Log IP address on every login and every refresh to audit_logs (already flagged in Addition 2 from the earlier batch  confirming it's actually wired in, not just planned).
+- [ ] Consider flagging (not necessarily blocking) a refresh from an IP/country materially different from the account's recent pattern — "impossible travel" style detection. Flag as a decision to make consciously about scope for Session 6 vs. deferring to a later session; not required to ship a full detection system now, but the audit log data needs to exist from Session 6 onward so this is buildable later without a data-collection gap.
+- [ ] Consider requiring fresh password confirmation (not just a valid token) before high-sensitivity actions specifically (bulk export, billing change, tenant deletion) — a deliberate "step-up auth" decision, separate from normal session validity.
+
+**Cross-tenant isolation at the auth layer specifically**
+- [ ] Confirm login with a valid email/password but wrong `tenantId` (for multi-tenant users) is rejected, not silently logged into the wrong tenant context.
+- [ ] Confirm the auth middleware populates `req.tenant` and `req.currentUser` from the DB using the JWT's `tenantId`/`userId` — never trusts a tenant ID passed in the request body/query on an authenticated route (same principle as "derive tenant_id from contact, never trust caller," applied to auth specifically).
+
+**Rate limiting on auth routes**
+- [ ] Confirm `authLimiter` (5/15min) actually applies to login, signup, and password-reset-request routes specifically — not just generically mounted at `/api/auth/` and assumed to cover everything added later.
+- [ ] Consider whether login failures should be tracked per-account (not just per-IP) to prevent distributed brute-force attempts against one specific email from many IPs — flag as a decision to make consciously, not a requirement to necessarily build now.
+
+**Cookie configuration (see Key Architecture Decision #15)**
+- [ ] Confirm both access and refresh token cookies are set with `httpOnly: true`, `secure: true`, `sameSite: "strict"` — all three flags, not just `httpOnly` alone. Missing `secure` allows transmission over plain HTTP; missing/weak `sameSite` reopens CSRF exposure that `httpOnly` alone does not address.
+- [ ] Confirm login/refresh responses do NOT also include the raw token string in the JSON body "just in case" — doing so defeats the purpose of `httpOnly`, since anything in the JSON body is readable by JavaScript regardless of the cookie flags.
+- [ ] Confirm logout clears the cookie server-side (`res.clearCookie(...)`) in addition to invalidating the refresh token row in the database — clearing only one of the two leaves either a dead cookie the browser still holds, or a live cookie pointing to a revoked token.
+
+**Logging**
+- [ ] Confirm `maskSensitive()` (currently exported but unused — see ongoing hygiene section) is wired into any logging call in the new auth code that logs request bodies or user objects, so passwords/tokens never land in logs even accidentally.
+
+---
+
+### Bot assignment & handoff — build checklist by session
+
+| Session | What it needs to add, specific to this design |
+|---|---|
+| **Session 5** (message processor) | `bot_assigned` gate check (before calling Claude); keyword-based handoff detection; `humanRequested` handling from Claude's structured output; second `bot_assigned` check before sending the finalized reply; one-turn-delayed summary logic; immediate re-summarization + debounce on reassignment; `conversations_used` increments only on real Claude calls ; interactive button send + button-tap detection (bypasses Claude for the `talk_to_agent` button ID); handling Claude's `suggestButtons` field to decide plain-text vs. interactive-button send |
+| **Session 3 / claude.service.ts** | Add `humanRequested: boolean` and `suggestButtons: string[] | null` to the expected structured JSON output schema; add the button-timing instruction to the system prompt |
+| **Session 7** | Notification fallback logic (broadcast when no `assigned_agent_id`); WebSocket/real-time layer (already flagged) — needed for the two-agents-simultaneously edge case |
+| **Session 13** (dashboard) | Per-conversation `bot_assigned` toggle (manual ON/OFF); tenant-wide `defaultBotAssignment` setting in business settings; live "agent viewing" indicator (depends on Session 7's WebSocket work); clear visual signal when a chat is bot-off and waiting on a human |
+
+---
+
 ## Known Gaps & Technical Debt
+
+### jobs/message.processor.ts
+
+- [x] ~~Stale comment referenced `lazyConnect: true` as the reconnection mechanism~~ — FIXED. That setting was removed (see `queue.service.ts` Known Gaps — `lazyConnect` broke job pickup on Upstash and was deliberately removed). The comment near the `messageQueue.process(5, processMessage)` try/catch was never updated after that fix and incorrectly implied `lazyConnect` was still active. Corrected to reference ioredis's own built-in reconnection behavior instead.
+- [ ] **Session 5 — CRITICAL — retry-aware idempotency within the processing pipeline itself, not just at the webhook layer.** If a job fails partway through (e.g. after the WhatsApp reply was successfully sent, but before the job completes/marks success), Bull's retry mechanism re-runs the entire job from scratch on the next attempt — including re-sending the reply, causing the customer to receive a duplicate message. This is a distinct risk from the webhook-level `webhook_events`/`jobId` dedup already in place, which only prevents the *same inbound message* from being processed twice — it does not prevent a *retry of one already-in-progress job* from re-sending an outbound reply. Session 5 must check `job.attemptsMade` and/or check whether an outbound message row already exists for this `messageId` before calling `sendTextMessage()` (or the relevant media variant), and skip re-sending if so — while still completing any remaining steps (updating contact score, marking `webhook_events.processed`, etc.) that may not have finished before the failure.
+
+### Bot assignment — database changes needed (Session 5/13)
+
+- [ ] **`contacts.bot_assigned: BOOLEAN NOT NULL DEFAULT true`** — new column, new migration.
+- [ ] **`tenants.bot_config` — add `defaultBotAssignment: boolean` and `humanHandoffKeywords: string[]`** — no migration needed, JSONB, but document the expected shape.
+- [ ] **Confirm `notifications.notification_type` supports a human-handoff-specific type** (or reuse `hot_lead` — decide explicitly, don't leave implicit).
+- [ ] **`conversations_used` increments ONLY on genuine Claude API calls — never for human-sent (`ai_generated: false`) messages.** This counter tracks Chatrix's own AI cost against plan limits; a human typing a reply has zero Claude cost and must not consume a tenant's bot-usage allowance. Meta's own per-message charges to the client are entirely separate and happen regardless of who composed the message — Chatrix has no visibility into or control over that side (see Decision #10).
+
+### Bot assignment — edge cases (Session 5/7/13)
+
+- [ ] **Two staff members acting on the same conversation simultaneously.** No current mechanism shows one agent that another is already viewing/handling a chat. **Fix requires the real-time layer** (WebSockets/Socket.io, already flagged under "Session 7 additions needed") — a live "X is viewing this conversation" indicator. Not solvable at the database level alone.
+- [ ] **Race condition: a human replies while Claude is already mid-processing the same inbound message.** The initial `bot_assigned` check (before calling Claude) can pass, then a human takes over during Claude's processing, before the bot's reply is sent. **Fix:** re-check `contact.bot_assigned` a second time, immediately before sending the finalized reply (after the safety check, right before the Meta API call) — cheap, one extra DB read, closes the window to a few milliseconds.
+- [ ] **Claude fails to detect an unusually-phrased human request** (e.g. "can I just talk to someone" vs. expected phrasing). **Fix:** the deterministic keyword check in Decision #17 runs independently of Claude's own judgment — two independent detection layers, not reliant on AI interpretation alone.
+- [ ] **No `assigned_agent_id` exists when a handoff notification needs to go somewhere.** **Fix:** if `assigned_agent_id` is `null`, broadcast the notification to all active agents at that tenant; whoever claims it becomes the `assigned_agent_id` at that point, rather than assignment being a prerequisite for notification.
+- [ ] **Bot must never auto-resume while a human still considers themselves responsible.** Already prevented by design (Decision #17 — no automatic timers) — flagged here as a hard rule to protect during any future "optimization," not an open gap.
+- [ ] **The immediate re-summarization call (Decision #18's exception) can itself fail.** **Fix:** wrap in try/catch; on failure, fall back to a simple non-AI concatenation of the raw human-handled messages as a temporary summary, and let the next normal turn refine it. Never block the bot from resuming because a summary call failed.
+- [ ] **Rapid `bot_assigned` toggling could trigger repeated, wasted re-summarization calls.** **Fix:** debounce ~60 seconds after flipping to `true`, only firing if still `true` at that point (see Decision #18).
+
+### Cost/margin protection (Session 7/9 — flagged during pricing review)
+
+- [ ] **Pro tier's `conversations_limit` still `99999` (effectively unlimited) — needs changing to a real calibrated cap (18,000/month suggested) before Pro tier goes live to any real client.** With no real ceiling, a genuinely heavy Pro client's actual Claude API cost could exceed the flat AED 599 they pay. 18,000/month is generous enough no realistic client hits it, while still protecting margin if one somehow did. **Action needed:** update the `plan_limits` seed row in `001_init.sql` (if not yet run against real Supabase) or via a direct `UPDATE` statement (if it has). Also confirm Session 6/7's plan-limit enforcement actually checks this value before calling Claude, not just before allowing a new conversation to start. Do this at whichever session first wires up `plan_limits` enforcement (Session 6/7) — don't ship Pro tier to a real client before this is done.
+- [ ] **No per-tenant Claude cost tracking exists yet.** Needed to catch a margin problem before it's a real loss. Suggest a running cost counter (new `tenants` column, or a separate usage-log table), updated on every Claude API call in the message processor.
+- [ ] **No per-contact message-frequency check exists.** One phone number sending an abnormal volume in a short window (spam, broken integration, abuse) currently triggers a full Claude call every time, with no throttle below the tenant-level `plan_limits` check.
+- [ ] **No monitoring of aggregate Anthropic API usage against account-wide rate limits**, which are shared across every tenant. One tenant's volume spike could degrade requests for every other tenant. Proactively request a rate limit increase from Anthropic once real usage grows.
+- [ ] **Session 7/10 — basic outbound webhook mechanism** (generic "notify external URL when X happens" — new contact, hot lead, conversation summary updated) prioritized earlier than originally planned, given confirmed integration gap in Meta's native agent (see Competitive Landscape section above).
 
 ### rateLimiter.middleware.ts
 
@@ -592,9 +740,27 @@ import Bull from "bull";
 - [ ] `downloadMedia` uses raw axios not `metaMediaApi` instance — intentional (URL already contains auth) but means no interceptors apply
 - [ ] No internal retry — intentional, Bull handles retries at job level to avoid double-retry
 
+### Meta daily messaging tier (distinct from Chatrix's own plan_limits — Session 5/10)
+
+This is a completely separate limit from anything Chatrix itself enforces via `plan_limits`. Meta caps how many **unique recipients** a business can message **outside** a customer-service window (i.e. broadcasts and drip follow-ups only) within a rolling 24-hour period. Service replies — the bot answering a customer who messaged first — never count toward this limit at all, regardless of volume.
+
+**The tier ladder:** 250 (unverified) → 1,000 (post-verification) → 10,000 → 100,000 → custom/unlimited. Tiers are earned automatically by Meta, not purchased or requested — advancement requires messaging roughly half the current tier's limit in unique recipients within a rolling 7-day window, while maintaining a Green or Yellow quality rating (checked every 6 hours). A Red quality rating (driven by recipient blocks/spam reports) freezes advancement, and only triggers an actual tier downgrade if it stays Red for 7 consecutive days.
+
+**Why this matters for Chatrix specifically:**
+- [ ] **Product gap, no session currently covers this** — nothing in the schema currently tracks a tenant's actual Meta-assigned messaging tier. A freshly onboarded tenant starts at 250/day (or 1,000 post-verification) regardless of which Chatrix plan they're paying for — a Pro-tier client could still get capped well below their `plan_limits.conversations_limit` in their first weeks, purely because their WABA hasn't built tier history yet. This is a real gap between what Chatrix's pricing implies and what Meta's infrastructure actually allows on day one.
+- [ ] **Session 5/10 — add a `tenants.meta_messaging_tier` column** (or similar), populated via `GET /<phone_number_id>?fields=whatsapp_business_manager_messaging_limit` and kept in sync via the `business_capability_update` webhook Meta sends automatically when a tier changes, rather than polling.
+- [ ] **Session 5/10 — handle Meta's tier-limit-exceeded error gracefully in the message processor and broadcast sender**, distinct from a generic send failure — surface it to the tenant's dashboard as "you've reached today's outreach limit for new contacts" rather than a silent/generic error, since this is a recoverable, expected condition as a business scales, not a bug.
+- [ ] **Verify during actual Meta Tech Provider onboarding, don't assume** — since each tenant connects their own separate WABA under their own Business Portfolio via Embedded Signup (not a shared Chatrix-wide portfolio), tiers should be isolated per-tenant — one tenant's poor-quality broadcast should not affect another tenant's tier. This is the expected behavior given how Embedded Signup scopes access, but has not been confirmed against a real multi-tenant setup yet, and is worth explicitly testing with two real connected tenants before relying on it as a guarantee.
+- [ ] **Distinct from, and in addition to, the already-flagged Session 10 item** — this daily *volume* tier is separate from the per-second *throughput* rate limit already noted in Known Gaps (`Add rate limiting between Meta API calls during broadcast`), and both are separate again from Meta's per-user frequency cap (~2 marketing messages/recipient/day, enforced across all WhatsApp businesses, not just Chatrix tenants — returns error code 131049, not billed if blocked for this reason). Three distinct mechanisms; each needs its own handling.
+
 ### queue.service.ts — RESOLVED via live testing (2026-06-30)
 
 - [x] ~~`lazyConnect: true` on Bull's Redis config broke job processing on Upstash~~ — FIXED. Producer connection (`.add()`) activated correctly but consumer connection (`.process()` blocking pop) never properly initialized. Jobs enqueued but were never picked up. Confirmed via live test: removing `lazyConnect` fixed pickup immediately (new jobs processed within the same second as enqueue). If touching Bull's Redis config again, do NOT re-add `lazyConnect` without re-testing job pickup specifically, not just connection status.
+
+### queue.service.ts — enqueueMessage duplicate-detection heuristic
+
+- [ ] **`isDuplicate` in `enqueueMessage` is a logging-accuracy heuristic only — it does not control actual dedup.** It infers "was this job just created, or did Bull return a pre-existing one?" by checking whether `Date.now() - job.timestamp > 2000` (assuming a genuinely new job's timestamp is essentially "now"). Under unusual network conditions (a slow Redis round-trip, e.g. during a connection blip similar to the `read ETIMEDOUT` idle-timeout issue already observed), a genuinely brand-new job could theoretically take longer than 2 seconds to complete its `.add()` call, causing this heuristic to incorrectly log "already queued — skipping duplicate" for a message that was not actually a duplicate. **Confirmed this does NOT affect actual processing** — `messageQueue.add(data, { jobId })` always returns a valid job either way (`return job;` runs regardless of the `isDuplicate` branch), so a false positive here only produces a misleading log line, never a lost or skipped message. Low priority — cosmetic/observability accuracy only, not a correctness bug. If tightening this matters later, checking `webhook_events` directly (already the durable, primary dedup layer) instead of inferring from a timestamp gap would remove the ambiguity entirely.
+- [ ] **Bull's `jobId` dedup (the actual mechanism preventing duplicate processing) has a real time boundary, worth being explicit about.** It only protects against a duplicate arriving while the original job still exists in Redis. Because `removeOnComplete: 100` prunes old completed jobs, a duplicate webhook arriving long after the original job completed *and* was pruned would find no existing job with that `jobId`, and Bull would create — and process — a genuine second job. This is precisely why `webhook_events` in Postgres (checked in the webhook controller, before a job is ever enqueued) is the primary, time-unlimited dedup layer, and Bull's `jobId` check is explicitly secondary. No action needed as long as the `webhook_events` check in the webhook controller is confirmed to run before every enqueue — worth a specific live-test in Session 5 confirming a very-late duplicate (arriving after the original job has been pruned from Bull) is still correctly caught by the DB check.
 
 ### Database schema edge cases
 
@@ -611,6 +777,10 @@ import Bull from "bull";
 - [ ] **Later** — Decide on soft-delete vs hard-delete for tenants/contacts. Current: hard delete with CASCADE. UAE PDPL "right to be forgotten" may require documented deletion process.
 - [ ] **Later (cron job)** — Suspend expired trials: `UPDATE tenants SET plan_status = 'suspended' WHERE plan_status = 'trial' AND trial_ends_at < NOW()`
 - [ ] **Later** — `plan_limits` table has no `updated_at` trigger (inconsistency with other tables)
+
+### utils/helpers.ts
+
+- [ ] **`sanitizePhone` does not handle a single leading zero (local-format numbers)** — the function only strips a leading `00` (the international-dialing-prefix convention, e.g. `0097150...`). A bare local-trunk-prefix number like `0501234567` (missing the country code entirely) passes through completely unchanged — no leading zero removed, no country code added. This differs from the `00` case: it's not a stripping problem, it's a missing-country-code problem, and `sanitizePhone` has no way to know which country's convention applies without additional context (e.g. the tenant's own country/region). Currently low-risk in practice since real phone numbers mostly arrive via Meta's own webhook payloads (`wa_id`/`from`), which are already in clean international format — this gap would only surface if some other input path (a manually-entered contact, a CSV import, a future public API) ever hands this function a bare local-format number. Worth a deliberate decision in Session 7 (or wherever manual contact entry is built) on whether to: (a) reject/flag numbers that don't already look internationally-formatted via `isValidPhone`'s length check, (b) require a country code to be entered separately from the local number in any manual-entry UI, or (c) leave as-is if this path genuinely never occurs in practice — but decide consciously rather than leave it as an unnoticed edge case.
 
 ### utils/logger.ts
 
@@ -632,8 +802,22 @@ import Bull from "bull";
 ### claude.service.ts
 
 - [ ] **Session 5 — CRITICAL** — Check `onboarding_progress.step_bot_configured` BEFORE calling `generateReply()`. If false, the tenant's `bot_config` is empty/default and Claude will respond with generic non-answers ("various services", "Assistant") to a real customer. Processor should instead notify the tenant's agent and/or send a holding message, not call Claude with an unconfigured bot.
-- [ ] **Product gap — no session currently covers this** — No audio/voice transcription path exists anywhere in the 13-session plan. UAE WhatsApp customers commonly send voice notes. Currently `message_type: "audio"` reaches Claude as `[audio message — no text content]` — the bot replies blind to whatever the customer actually said. Needs a transcription step (e.g. Whisper API) inserted before `generateReply()` is called, likely in Session 5's processor or as a new dedicated step.
+- [x] ~~Product gap — no audio/voice transcription path~~ — DECIDED, in scope for Session 5 (no longer deferred). Inbound: before calling `generateReply()`, download the voice note from Meta and send it to ElevenLabs Scribe (speech-to-text) to get real transcribed text — replaces the current `[audio message — no text content]` placeholder in `buildUserPrompt`. Outbound: after the safety check finalizes the reply text, optionally convert it to speech via ElevenLabs TTS (Flash v2.5) and send via the *already-existing* `uploadMedia()` + `sendAudioMessage()` functions in `whatsapp.service.ts` — no new WhatsApp-sending infrastructure needed, only the new TTS step. Default behavior: mirror the customer's format (voice note in → voice note reply; text in → text reply). Consider a `tenants.bot_config.voiceReplyMode` setting (`"match_customer" | "always_text" | "always_voice"`) for tenants who want to override the default. Both directions add a new, separate ElevenLabs cost per use — fold into the same per-tenant Claude cost-tracking mechanism already flagged under "Cost/margin protection," don't track it separately.
 - [ ] Reply truncation (`MAX_REPLY_CHARS = 3500`) slices by character count — acceptable for English/Arabic but could land mid-sentence. Not a crash risk, just a cosmetic edge case if a model ever ignores the "under 300 words" instruction.
+
+### Security & Ops Hygiene (Ongoing — Not Session-Specific)
+
+These are not one-time tasks to complete in a single session. They're recurring habits that need to stay active for the life of the product. Re-check this list periodically, not just once.
+
+- [ ] **Ongoing** — `npm audit` was 0 vulnerabilities as of last check (see Current State), but this is a point-in-time snapshot, not a permanent guarantee. New CVEs get disclosed in already-installed dependencies (Express, jsonwebtoken, bull, etc.) on an ongoing basis. Re-run `npm audit` regularly, or enable GitHub Dependabot alerts / Snyk on the repo so this happens automatically instead of relying on memory.
+- [ ] **Later, before onboarding real paying clients** — No WAF / DDoS protection layer exists in front of Render. Current rate limiters (`generalLimiter`, `webhookLimiter`) protect against moderate abuse from a single source, not a genuine distributed attack. Cloudflare in front of Render is the natural fit — note this requires bumping `trust proxy` from `1` to `2` in `app.ts` (Cloudflare adds a proxy hop) if/when added.
+- [ ] **Process, not code** — `.env` secrets are currently managed as plain files. As the classmate (frontend) and any freelance collaborators get involved, plaintext `.env` files passed via Slack/email/personal laptops are a common, boring leak vector — arguably more likely than any code-level exploit. Needs an explicit process: how secrets get shared, rotated if a laptop is lost, and rotated on team member offboarding. Not urgent at 2-person scale, but worth deciding before the team grows.
+- [ ] **Before Session 12 (deploy) / before first paying client** — No session in the 13-session plan is explicitly a security review. Add one: run something like OWASP ZAP against a staging deploy, and do a focused manual pass on auth/session handling specifically once Session 6 ships — that session is the highest-stakes one security-wise, since it's the difference between "public webhook receiver" and "system holding other businesses' customer data behind a login."
+- [ ] **Session 3, reframed** — `claude.service.ts` being untested against a real `ANTHROPIC_API_KEY` isn't just a functionality gap. Untested error paths (timeouts, malformed responses, real rate-limit responses) are a common place for security-relevant bugs to hide — e.g. an unhandled error accidentally leaking a stack trace or internal detail in a response. Treat live-testing this file as a security task too, not purely a "does it work" task.
+
+### auth architecture (Session 6, forward-looking)
+
+- [ ] Session 6 — document explicitly, don't assume — Refresh token rotation alone does not protect against exclusive, sustained token theft (both tokens stolen, real user's copies never used again). This scenario requires the absolute session lifetime cap (Decision #16) and audit-log-based anomaly signals to bound — rotation's protection is limited to the case where legitimate and stolen token use overlap and compete. Documented here so this limit is a known, accepted tradeoff rather than a surprise discovered later.
 
 ### Session 7 additions needed
 
@@ -646,6 +830,14 @@ import Bull from "bull";
 
 - [ ] Upstash Redis free tier deleted after 14 days inactivity. Once on Render (Session 12) server runs 24/7 — this won't recur. Until then, recreate if deleted.
 - [ ] Supabase free tier pauses after 7 days inactivity. Already has Vercel cron job on the Dubai client project but Chatrix project needs its own protection.
+
+
+### Deferred product features — confirmed feasible, revisit post-first-client
+
+These are real, technically confirmed capabilities — not speculative — but deliberately out of scope until Chatrix has at least one real, paying client. Listed here so they aren't forgotten, and so the reasoning for deferring isn't re-litigated from scratch later.
+
+- [ ] **WhatsApp Groups API** — Meta added native group messaging to the Cloud API in 2026 (Official Business Account required). Max 8 participants per group (business number takes one slot), max 10,000 groups per business number, invite-link-only joining. Supports text, media, and templates — does NOT support calls, interactive buttons/lists, or commerce messages. **Why deferred:** requires new `groups` and `group_participants` tables (breaks the current 1:1 tenant↔contact schema assumption), new webhook handling for 4 new event types (`group_lifecycle_update`, `group_participants_update`, `group_settings_update`, `group_status_update`), and an undesigned product decision — the bot cannot sensibly auto-reply to every message in a multi-human group thread the way it does in a 1:1 chat; needs explicit trigger logic (e.g. only respond when directly addressed). **Realistic use case for Chatrix's client types:** coordinating a single multi-stakeholder transaction (e.g. a property deal involving buyer, buyer's spouse, and a bank contact), not broadcast reach — Broadcasts already covers reach. **Pricing precedent:** DoubleTick gates group creation behind their PRO tier — if built, scope this the same way (Growth/Pro only, not Starter/Trial).
+- [ ] **AI voice calling (inbound and/or outbound phone calls handled by an AI agent)** — confirmed technically buildable (Twilio for telephony/phone numbers + ElevenLabs Conversational AI for STT+LLM+TTS, officially integrated together). **Why deferred, more strongly than Groups:** this is architecturally a separate, parallel product, not an extension of the existing one. Requires: a live, persistent, real-time connection per call (fundamentally incompatible with the async Bull-queue design that underlies the entire WhatsApp pipeline — no "queue it and process later" is possible mid-call), a Twilio phone number + ElevenLabs agent per tenant (mirroring but entirely separate from each tenant's WhatsApp setup), a new `calls` table, and three simultaneous per-minute cost meters (Twilio + ElevenLabs + Claude) running for the full call duration. **Outbound calling specifically** carries real UAE telemarketing/consent compliance questions not yet researched — do not assume it's equivalent to WhatsApp business messaging rules. Revisit only once the core text-based product has real revenue and the team has capacity to own a genuinely separate real-time system.
 
 ---
 
@@ -670,7 +862,9 @@ Claude returns JSON:
     "budget": "string | null",
     "timeline": "string | null",
     "urgency_signals": ["array of detected signals"],
-    "update_summary": "string — new conversation summary to store"
+    "update_summary": "string — summary of the PREVIOUS turn, not this one — see Decision #18",
+    "humanRequested": "boolean — true if the customer is asking to speak with a human agent — see Decision #17",
+    "suggestButtons": "string[] | null — up to 3 short options to offer as interactive buttons, only at a genuine decision point — null otherwise — see Decision #17"
 }
 ```
 
@@ -946,6 +1140,7 @@ Session 12 ⬜ Not started — Deploy to Render + Meta webhook setup
 Session 13 ⬜ Not started — Next.js dashboard (classmate)
 ```
 
+
 ## ⚠️ Rules For Claude Reading This Document
 
 1. Follow ALL patterns in this document exactly — they were deliberately chosen
@@ -959,3 +1154,5 @@ Session 13 ⬜ Not started — Next.js dashboard (classmate)
 8. The very important rule is always think properly, think of all edge cases and
    generate high prodction grade code. Do not dump all code at one. Generate one file at each time
    sequentially and explain the file properly with pros and cons and its necessities thoroughly.
+9. Before starting always think about which problem needs to be solved immediately and not push it 
+    to later so that we go by building in a good smooth sequence without leaving any bug behind.
